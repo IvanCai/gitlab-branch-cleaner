@@ -1,5 +1,4 @@
 import { Gitlab } from '@gitbeaker/node';
-import type { ProjectSchema } from '@gitbeaker/core';
 import cron from 'node-cron';
 import dotenv from 'dotenv';
 
@@ -12,7 +11,7 @@ if (!process.env.GITLAB_TOKEN) {
 
 const gitlab = new Gitlab({
   token: process.env.GITLAB_TOKEN,
-  host: process.env.GITLAB_URL || 'https://gitlab.com'
+  host: process.env.GITLAB_URL
 });
 
 // Parse group filter from environment variable
@@ -23,6 +22,16 @@ const groupFilter = process.env.GROUP_FILTER ?
 interface BranchInfo {
   name: string;
   project: string;
+  created_at?: string;
+}
+
+// Function to check if a date is older than 3 days
+function isOlderThanThreeDays(dateStr?: string): boolean {
+  if (!dateStr) return false;
+  const date = new Date(dateStr);
+  const threeDaysAgo = new Date();
+  threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+  return date < threeDaysAgo;
 }
 
 export async function getAllProjects(dryRun = false): Promise<any[]> {
@@ -55,10 +64,11 @@ export async function getHotfixBranches(projectId: number | string): Promise<Bra
     const branches = await gitlab.Branches.all(project.id);
     
     return branches
-      .filter(branch => branch.name.toLowerCase().startsWith('hotfix/'))
+      .filter(branch => branch.name.toLowerCase().startsWith('hotfix'))
       .map(branch => ({
         name: branch.name,
-        project: project.path_with_namespace || ''
+        project: project.path_with_namespace || '',
+        created_at: branch.commit?.created_at as string | undefined
       }));
   } catch (error) {
     console.error(`Error getting branches for project ${projectId}:`, error);
@@ -72,23 +82,30 @@ export async function cleanHotfixBranchesForProject(projectId: number | string, 
     if (dryRun) console.log(`\nScanning project: ${project.path_with_namespace}`);
     
     const hotfixBranches = await getHotfixBranches(projectId);
+    const oldHotfixBranches = hotfixBranches.filter(branch => isOlderThanThreeDays(branch.created_at));
 
-    if (hotfixBranches.length === 0) {
-      if (dryRun) console.log(`No hotfix branches found in ${project.path_with_namespace}`);
+    if (oldHotfixBranches.length === 0) {
+      if (dryRun) {
+        if (hotfixBranches.length > 0) {
+          console.log(`Found ${hotfixBranches.length} hotfix branches in ${project.path_with_namespace}, but none are older than 3 days`);
+        } else {
+          console.log(`No hotfix branches found in ${project.path_with_namespace}`);
+        }
+      }
       return [];
     }
 
     if (dryRun) {
-      console.log(`Found ${hotfixBranches.length} hotfix branches in ${project.path_with_namespace}`);
-      return hotfixBranches;
+      console.log(`Found ${oldHotfixBranches.length} hotfix branches older than 3 days in ${project.path_with_namespace}`);
+      return oldHotfixBranches;
     }
 
-    // Delete each hotfix branch
+    // Delete each old hotfix branch
     const deletedBranches: BranchInfo[] = [];
-    for (const branch of hotfixBranches) {
+    for (const branch of oldHotfixBranches) {
       try {
         await gitlab.Branches.remove(project.id, branch.name);
-        console.log(`Successfully deleted branch: ${branch.name} from ${project.path_with_namespace}`);
+        console.log(`Successfully deleted branch: ${branch.name} from ${project.path_with_namespace} (created at: ${branch.created_at})`);
         deletedBranches.push(branch);
       } catch (error) {
         console.error(`Failed to delete branch ${branch.name} from ${project.path_with_namespace}:`, error);

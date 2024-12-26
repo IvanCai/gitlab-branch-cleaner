@@ -1,0 +1,25 @@
+image: node:16
+
+stages:
+  - build
+  - test
+  - deploy
+
+build_job:
+  stage: build
+  script:
+    - yarn install
+    - yarn build
+  artifacts:
+    paths:
+      - build/
+
+test_job:
+  stage: test
+  script:
+    - yarn test
+
+deploy_job:
+  stage: deploy
+  script:
+    - echo "Deploying to production"
